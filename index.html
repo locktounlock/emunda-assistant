@@ -76,6 +76,8 @@
   .btn.sm{flex:none; padding:6px 12px; font-size:12px;}
   .cardcancel{text-align:center; font-size:12px; color:var(--sub); margin-top:9px; cursor:pointer; padding:4px;}
   .cardcancel:active{color:var(--red);}
+  .tierpick{border:1px solid var(--line); border-radius:10px; padding:9px 11px; margin-bottom:6px; font-size:13px; cursor:pointer;}
+  .tierpick.on{border-color:var(--accent); background:rgba(108,140,255,.14);}
 
   .empty{text-align:center; color:var(--sub); padding:50px 20px; font-size:14px; line-height:1.6;}
   .empty .big{font-size:40px; margin-bottom:10px;}
@@ -311,13 +313,14 @@ function toRupiah(numStr, unit){
   return Math.round(n);
 }
 function fmtRp(n){ return 'Rp '+ n.toLocaleString('id-ID'); }
+function cap(s){ return (s||'').charAt(0).toUpperCase()+(s||'').slice(1); }
 
 function parseMessages(raw){
   const text = raw.replace(/\r/g,'').trim();
   const low = text.toLowerCase();
   const R = {raw:text, fee:null, addCost:null, brand:null, role:null, gender:null, ageRange:null,
     castingDate:null, shootDate:null, deadline:null, times:[], location:null, sender:null,
-    requirements:[], exclusivity:null, inferCategory:null, notes:[]};
+    requirements:[], exclusivity:null, inferCategory:null, notes:[], feeTiers:[], multiRole:false};
 
   /* ---- MONEY ---- */
   const moneyRe = /(rp\.?\s?)?(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)\s?(jt|juta|jta|rb|ribu|k)?\b/gi;
@@ -378,34 +381,48 @@ function parseMessages(raw){
   const timeRe = /(?:jam|pukul|pkl|call ?time|ct)\s*:?\s*(\d{1,2})[.:](\d{2})/gi;
   while((m=timeRe.exec(low))!==null){ R.times.push(m[1].padStart(2,'0')+':'+m[2]); }
 
+  /* ---- FEE TIERS (open casting w/ several roles & fees) ---- */
+  const tierRe = /(supporting|featured?|utama|pendukung|main talent|figuran|crew|pemeran|talent)[^\n]{0,25}?(\d+(?:[.,]\d+)?)\s*(juta|jt|rb|ribu)\b/gi;
+  const seenFee=new Set();
+  while((m=tierRe.exec(low))!==null){
+    const val=toRupiah(m[2],m[3]);
+    if(val && val>=50000 && !seenFee.has(val)){ seenFee.add(val); R.feeTiers.push({label:m[1], fee:val}); }
+  }
+  R.multiRole = R.feeTiers.length>1;
+  if(R.feeTiers.length){ R.fee = Math.max(...R.feeTiers.map(t=>t.fee)); }   // default = highest tier
+
   /* ---- BRAND ---- */
-  const b = text.match(/\b(?:[Ii]klan|[Pp]roject|[Cc]ampaign|[Bb]rand|[Kk]lien|[Cc]lient)\s+([A-Z][A-Za-z0-9&\-]*(?:\s+[A-Z][A-Za-z0-9&\-]*){0,2})/);
+  const BSTOP=/^(competitor|kompetitor|open|close|casting|talent|telent|supporting|featured?|by|file)\b/i;
+  const b = text.match(/\b(?:[Ii]klan|[Jj]ob|[Pp]roject|[Cc]ampaign|[Bb]rand|[Kk]lien|[Cc]lient)[ \t]+([A-Z][A-Za-z0-9&\-]*(?:[ \t]+[A-Z][A-Za-z0-9&\-]*){0,2})/);
   if(b){
-    const pre = text.slice(Math.max(0,b.index-16), b.index).toLowerCase();
-    if(!/pernah|sedang|jika|kalau|tidak/.test(pre)){        // skip exclusivity clauses ("jika pernah iklan X")
-      let cand=b[1].trim().replace(/\b(Tema|Role|Talent|Utama|Butuh|Untuk|Dan|Yang)\b.*/,'').trim();
+    const pre = text.slice(Math.max(0,b.index-18), b.index).toLowerCase();
+    if(!/pernah|sedang|jika|kalau|tidak|pengalaman/.test(pre) && !BSTOP.test(b[1].trim())){
+      let cand=b[1].trim().replace(/\b(Tema|Role|Talent|Telent|Utama|Butuh|Untuk|Dan|Yang|By)\b.*/,'').trim();
       if(cand && cand.length>1) R.brand=cand;
     }
   }
 
-  /* ---- ROLE / GENDER / AGE ---- */
-  const roleM = low.match(/talent utama|talent pendukung|main talent|supporting|figuran|cameo|talent tunggal/);
-  if(roleM) R.role = roleM[0];
-  const g = low.match(/(pria|wanita|cowok|cewek|laki-?laki|perempuan|male|female)/);
-  if(g) R.gender = g[1];
-  const age = low.match(/(?:usia|umur|age)?\s*(\d{2})\s*[-–sd\/]+\s*(\d{2})\s*(?:th|thn|tahun)?/);
-  if(age && +age[1]>=10 && +age[1]<=70) R.ageRange = age[1]+'–'+age[2];
+  /* ---- ROLE / GENDER / AGE (only trust for single-role messages) ---- */
+  if(!R.multiRole){
+    const roleM = low.match(/talent utama|talent pendukung|main talent|supporting|figuran|cameo|talent tunggal/);
+    if(roleM) R.role = roleM[0];
+    const g = low.match(/(pria|wanita|cowok|cewek|laki-?laki|perempuan|male|female)/);
+    if(g) R.gender = g[1];
+    const age = low.match(/(?:usia|umur|age)\s*(\d{2})\s*[-–]\s*(\d{2})\s*(?:th|thn|tahun)?/);
+    if(age && +age[1]>=10 && +age[1]<=70 && +age[2]>=+age[1] && +age[2]<=75) R.ageRange = age[1]+'–'+age[2];
+  }
 
   /* ---- LOCATION ---- */
-  let loc = text.match(/(?:lokasi|tempat|venue|bertempat|@)\s*:?\s*(?:di\s+)?([A-Z][A-Za-z0-9.]+(?:\s+[A-Z][A-Za-z0-9.]+){0,3})/i);
+  const LSTOP=/workshop|fitting|meeting|reading|standby|tbc|final|test|depan|kamera/i;
+  let loc = text.match(/(?:lokasi|tempat|venue|bertempat)\s*:?\s*(?:di\s+)?([A-Z][A-Za-z0-9.]+(?:\s+[A-Z][A-Za-z0-9.]+){0,3})/i);
   if(!loc) loc = text.match(/\bdi\s+([A-Z][A-Za-z0-9.]+(?:\s+[A-Z][A-Za-z0-9.]+){0,3})/);
-  if(loc){ let c=loc[1].trim().replace(/\b(Konfirm|Fee|Casting|Jam|Role|Deadline|Pukul).*/,'').replace(/[.,\s]+$/,'').trim(); if(c.length>2) R.location=c; }
+  if(loc){ let c=loc[1].trim().replace(/\b(Konfirm|Fee|Casting|Jam|Role|Deadline|Pukul).*/,'').replace(/[.,\s]+$/,'').trim(); if(c.length>2 && !LSTOP.test(c)) R.location=c; }
 
   /* ---- SENDER / PH ---- */
   let s = text.match(/[-–—]\s*([A-Z][A-Za-z.'&]+(?:\s+[A-Z][A-Za-z.'&]+){0,3})\s*$/m);
   if(!s) s = text.match(/(?:from|dari|pic|cp|contact)\s*:?\s*([A-Z][A-Za-z.'&]+(?:\s+[A-Za-z.'&]+){0,2})/i);
   const houseM = text.match(/([A-Z][A-Za-z]+\s+(?:Casting|Management|Agency|Production|Entertainment|Studio|Pictures|Films|Talenta))/);
-  if(houseM) R.sender = houseM[1];
+  if(houseM && !/open casting|close casting|casting call|by file/i.test(houseM[1])) R.sender = houseM[1];
   else if(s) R.sender = s[1].trim();
 
   /* ---- REQUIREMENTS (bullets) ---- */
@@ -497,11 +514,15 @@ function doParse(){
   const R=parseMessages(raw);
   let agency=document.getElementById('agency').value.trim();
   if(!agency && R.sender){ agency=R.sender; document.getElementById('agency').value=agency; } // autofill from parsed sender
+  let selTierIdx=null;
+  if(R.feeTiers.length){ selTierIdx=R.feeTiers.reduce((mi,t,i,a)=> t.fee>a[mi].fee?i:mi, 0); R.fee=R.feeTiers[selTierIdx].fee; }
   const S=scoreOffer(R);
   const dup=findDuplicate(R, agency);
-  pending={R,S,agency,dup};
+  pending={R,S,agency,dup,selTier:selTierIdx,roleNote:''};
   renderParse(R,S,agency,dup);
 }
+function selTier(i){ if(!pending)return; pending.selTier=i; pending.R.fee=pending.R.feeTiers[i].fee; pending.S=scoreOffer(pending.R); renderParse(pending.R,pending.S,pending.agency,pending.dup); }
+function setRoleNote(v){ if(pending) pending.roleNote=v; }
 function fld(k,v,ok){ return '<div class="field'+(ok?'':' flagrow')+'"><span class="k">'+k+'</span><span class="v">'+v+'</span>'+(ok?'<span class="chk">✓</span>':'<span class="chk" style="color:var(--amber)">?</span>')+'</div>'; }
 function renderParse(R,S,agency,dup){
   let h='';
@@ -513,8 +534,20 @@ function renderParse(R,S,agency,dup){
   h+='<div class="sectitle">Hasil baca</div><div class="card" style="padding:2px 0">';
   h+= fld('Agency', agency||'<i style="color:var(--amber)">belum diisi</i>', !!agency);
   h+= fld('Brand', R.brand||'<i style="color:var(--amber)">belum ada</i>', !!R.brand);
-  h+= fld('Role', [R.role,R.gender,R.ageRange].filter(Boolean).join(' · ')||'<i style="color:var(--amber)">belum ada</i>', !!(R.role||R.gender));
-  h+= fld('Fee', R.fee?'<span class="fee">'+fmtRp(R.fee)+'</span>':'<i style="color:var(--amber)">belum ada</i>', !!R.fee);
+  if(R.multiRole){
+    h+= fld('Peran', '<span style="color:var(--amber)">Beberapa peran — lihat Syarat, isi peran kamu di bawah</span>', true);
+  } else {
+    h+= fld('Role', [R.role,R.gender,R.ageRange].filter(Boolean).join(' · ')||'<i style="color:var(--amber)">belum ada</i>', !!(R.role||R.gender));
+  }
+  // FEE — single row, or a tier picker when several fees exist
+  if(R.feeTiers.length>1){
+    let fh='<span class="v" style="width:100%"><div style="font-size:11.5px;color:var(--amber);margin-bottom:6px">Ada '+R.feeTiers.length+' tier fee — pilih peran yang kamu apply:</div>';
+    fh+=R.feeTiers.map((t,i)=>'<div class="tierpick'+(pending&&pending.selTier===i?' on':'')+'" onclick="selTier('+i+')">'+cap(t.label)+' — <b style="color:var(--green)">'+fmtRp(t.fee)+'</b></div>').join('');
+    fh+='</span>';
+    h+='<div class="field"><span class="k">Fee</span>'+fh+'<span class="chk">✓</span></div>';
+  } else {
+    h+= fld('Fee', R.fee?'<span class="fee">'+fmtRp(R.fee)+'</span>':'<i style="color:var(--amber)">belum ada</i>', !!R.fee);
+  }
   if(R.addCost) h+= fld('Add-cost', fmtRp(R.addCost), true);
   h+= fld('Casting', R.castingDate?fmtD(R.castingDate)+(R.times[0]?' · '+R.times[0]:''):'<i style="color:var(--amber)">belum ada</i>', !!R.castingDate);
   if(R.shootDate) h+= fld('Shooting', fmtD(R.shootDate), true);
@@ -533,6 +566,9 @@ function renderParse(R,S,agency,dup){
     +'<div class="scmeta"><div class="lbl">Skor follow-up</div><div class="big" style="color:'+S.color+'">'+S.verdict+'</div></div></div>';
   h+='<div style="margin-top:12px">'+S.reasons.map(r=>'<div style="font-size:12.5px;color:var(--sub);margin:5px 0;display:flex;gap:8px"><span style="color:'+(r[0]==='+'?'var(--green)':r[0]==='-'?'var(--red)':r[0]==='!'?'var(--red)':'var(--amber)')+'">'+(r[0]==='+'?'▲':r[0]==='-'?'▼':r[0]==='!'?'🚩':'•')+'</span><span>'+r[1]+'</span></div>').join('')+'</div></div>';
 
+  h+='<label style="margin-top:16px">Peran kamu (opsional — kalau apply peran tertentu)</label>';
+  h+='<input type="text" id="rolenote" placeholder="mis. Supporting cewek 27-30" value="'+(pending&&pending.roleNote?pending.roleNote.replace(/"/g,'&quot;'):'')+'" oninput="setRoleNote(this.value)">';
+
   h+='<div class="btns" style="margin-top:14px"><div class="btn pri" onclick="saveOffer(\'applied\')">Simpan — saya apply</div><div class="btn" onclick="saveOffer(\'new\')">Simpan saja</div></div>';
   h+='<div class="btn" style="margin-top:8px" onclick="saveOffer(\'skip\')">Skip tawaran ini</div>';
 
@@ -542,6 +578,7 @@ function renderParse(R,S,agency,dup){
 function draftReply(R,S){
   let ask=[]; if(!R.fee)ask.push('fee utama'); if(!R.brand)ask.push('brand'); if(!R.castingDate&&!R.shootDate)ask.push('tanggal casting/shooting'); if(!R.location)ask.push('lokasi');
   let msg='Halo kak, aku tertarik apply untuk project ini 🙏\n';
+  if(R.roleNote) msg+='Aku apply untuk peran: '+R.roleNote+(R.fee?' (fee '+fmtRp(R.fee)+')':'')+'.\n';
   if(R.requirements.length) msg+='Material aku siapkan: '+R.requirements.slice(0,3).join(', ')+'.\n';
   if(R.exclusivity) msg+='Note eksklusivitas: aku *belum pernah* iklan sejenis, jadi aman ✅\n';
   msg+='Schedule aku amankan dulu ya.';
@@ -552,8 +589,10 @@ function draftReply(R,S){
 /* ---------------- SAVE OFFER ---------------- */
 function saveOffer(status){
   if(!pending) return;
-  const {R,S,agency}=pending;
+  const {R,S,agency,roleNote,selTier}=pending;
+  const tierLabel = (R.feeTiers.length>1 && selTier!=null)? cap(R.feeTiers[selTier].label) : '';
   const o={ id:Date.now(), status, raw:R.raw, agency:agency||R.sender||'', brand:R.brand, role:R.role, gender:R.gender, ageRange:R.ageRange,
+    roleNote:roleNote||'', feeTierLabel:tierLabel, feeTiers:R.feeTiers, multiRole:R.multiRole,
     fee:R.fee, addCost:R.addCost, sender:R.sender, location:R.location,
     castingDate:R.castingDate?R.castingDate.toISOString():null,
     shootDate:R.shootDate?R.shootDate.toISOString():null,
@@ -575,7 +614,7 @@ function saveOffer(status){
 
 function sendReply(id){
   const o=offers.find(x=>x.id===id); if(!o) return;
-  const R={fee:o.fee,brand:o.brand,castingDate:o.castingDate,shootDate:o.shootDate,location:o.location,requirements:o.requirements||[],exclusivity:o.exclusivity};
+  const R={fee:o.fee,brand:o.brand,castingDate:o.castingDate,shootDate:o.shootDate,location:o.location,requirements:o.requirements||[],exclusivity:o.exclusivity,roleNote:o.roleNote};
   const msg=draftReply(R,{});
   const url='https://wa.me/?text='+encodeURIComponent(msg);
   // show editable draft then open WA
@@ -591,12 +630,13 @@ function offerCard(o, showScore){
   const [tl,tc]=tagFor(o.status);
   let miss=[]; if(!o.brand)miss.push('brand'); if(!o.fee)miss.push('fee'); if(!o.castingDate&&!o.shootDate)miss.push('tanggal');
   let h='<div class="card"><div class="row-top"><div><div class="brand">'+(o.brand||o.inferCategory&&('('+o.inferCategory+')')||'Tawaran tanpa brand')+'</div>';
-  h+='<div class="role">'+([o.role,o.gender,o.ageRange].filter(Boolean).join(' · ')||'—')+(o.agency?' · via '+o.agency:'')+'</div></div>';
+  const roleDisp = o.roleNote || [o.role,o.gender,o.ageRange].filter(Boolean).join(' · ') || (o.multiRole?'Multi-peran':'—');
+  h+='<div class="role">'+roleDisp+(o.agency?' · via '+o.agency:'')+'</div></div>';
   h+='<span class="tag '+tc+'">'+tl+'</span></div>';
   if(hasConflict(o)){ const other=offers.find(x=>x.id!==o.id&&x.status!=='skip'&&x.agency&&o.agency&&norm(x.agency)!==norm(o.agency)&&sameJob(o,x)); h+='<div class="miss" style="color:var(--red)">🚫 Job sama juga ada dari <b>'+(other?other.agency:'agency lain')+'</b> — jangan apply dua-duanya</div>'; }
   h+='<div class="meta">';
   if(o.castingDate) h+='<span>Casting <b>'+fmtD(o.castingDate)+'</b></span>';
-  if(o.fee) h+='<span class="fee">'+fmtRp(o.fee)+'</span>'; else if(o.addCost) h+='<span>add '+fmtRp(o.addCost)+'</span>';
+  if(o.fee) h+='<span class="fee">'+(o.feeTierLabel?o.feeTierLabel+' ':'')+fmtRp(o.fee)+'</span>'; else if(o.addCost) h+='<span>add '+fmtRp(o.addCost)+'</span>';
   h+='</div>';
   if(miss.length) h+='<div class="miss">⚠ belum ada: '+miss.join(', ')+'</div>';
   if(showScore){ h+='<div class="scoremini"><div class="bar"><i style="width:'+o.score+'%"></i></div><span class="scnum">'+o.score+(o.provisional?'?':'')+'</span></div>';
@@ -723,6 +763,7 @@ function renderSchedule(){
       detail='<div class="evdetail">'
         +'<div class="evd-row"><span>Job</span><b>'+(off.brand||off.inferCategory||'Tanpa brand')+'</b></div>'
         +(off.agency?'<div class="evd-row"><span>Agency</span><b>'+off.agency+'</b></div>':'')
+        +(off.roleNote?'<div class="evd-row"><span>Peran</span><b>'+off.roleNote+'</b></div>':'')
         +'<div class="evd-row"><span>Status</span><span class="tag '+tc+'">'+tl+'</span></div>'
         +(off.fee?'<div class="evd-row"><span>Fee</span><b style="color:var(--green)">'+fmtRp(off.fee)+'</b></div>':'')
         +(off.sender?'<div class="evd-row"><span>PH</span><b>'+off.sender+'</b></div>':'')
