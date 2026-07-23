@@ -320,7 +320,7 @@ function parseMessages(raw){
   const low = text.toLowerCase();
   const R = {raw:text, fee:null, addCost:null, brand:null, role:null, gender:null, ageRange:null,
     castingDate:null, shootDate:null, deadline:null, times:[], location:null, sender:null,
-    requirements:[], exclusivity:null, inferCategory:null, notes:[], feeTiers:[], multiRole:false};
+    requirements:[], exclusivity:null, inferCategory:null, notes:[], feeTiers:[], multiRole:false, shootDates:[]};
 
   /* ---- MONEY ---- */
   const moneyRe = /(rp\.?\s?)?(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)\s?(jt|juta|jta|rb|ribu|k)?\b/gi;
@@ -376,6 +376,24 @@ function parseMessages(raw){
     else if(!R.castingDate) R.castingDate=dt;
     else if(!R.shootDate) R.shootDate=dt;
   });
+
+  /* ---- MULTI-DAY SHOOT (e.g. "shooting 3,4,5 Agustus" or "3-5 Agustus") ---- */
+  const shootDayRe = new RegExp('(?:shoot\\w*|syut\\w*|take|shooting)[^\\n]{0,20}?(\\d{1,2}(?:\\s*[,&\\-–]\\s*\\d{1,2})+)\\s*('+monthAlt+')(?:\\s*(\\d{4}))?','gi');
+  let sm2;
+  while((sm2=shootDayRe.exec(low))!==null){
+    const mon=MONTHS[sm2[2].toLowerCase()], yr=sm2[3]?+sm2[3]:null;
+    let days=[];
+    sm2[1].split(/[,&]/).forEach(n=>{ n=n.trim();
+      const rg=n.match(/(\d{1,2})\s*[-–]\s*(\d{1,2})/);
+      if(rg){ for(let d=+rg[1]; d<=+rg[2] && d-(+rg[1])<31; d++) days.push(d); }
+      else if(/^\d{1,2}$/.test(n)) days.push(+n);
+    });
+    days=[...new Set(days)].filter(d=>d>=1&&d<=31);
+    days.forEach(day=> R.shootDates.push(mkDate({day,mon,yr})) );
+  }
+  // dedupe by calendar day
+  { const seen=new Set(); R.shootDates=R.shootDates.filter(d=>{ const k=d.toISOString().slice(0,10); if(seen.has(k))return false; seen.add(k); return true; }); }
+  if(R.shootDates.length){ R.shootDate=R.shootDates[0]; }   // primary = first day (for scoring/dedup)
 
   /* ---- TIMES ---- */
   const timeRe = /(?:jam|pukul|pkl|call ?time|ct)\s*:?\s*(\d{1,2})[.:](\d{2})/gi;
@@ -611,8 +629,9 @@ function saveOffer(status){
     created:Date.now(), replied:false };
   offers.unshift(o); store.set('offers',offers);
   // auto-create hold events
-  if(R.castingDate) events.push({id:'c'+o.id, title:(R.brand||'Casting'), date:R.castingDate.toISOString(), info:(R.times[0]||'')+(R.location?' · '+R.location:''), type:'casting', hold:status!=='booked'});
-  if(R.shootDate) events.push({id:'sh'+o.id, title:'Shooting '+(R.brand||''), date:R.shootDate.toISOString(), info:R.location||'', type:'shoot', hold:true});
+  if(R.castingDate) events.push({id:'c'+o.id, oid:o.id, title:(R.brand||'Casting'), date:R.castingDate.toISOString(), info:(R.times[0]||'')+(R.location?' · '+R.location:''), type:'casting', hold:status!=='booked'});
+  const shootList = (R.shootDates&&R.shootDates.length)? R.shootDates : (R.shootDate?[R.shootDate]:[]);
+  shootList.forEach((d,i)=> events.push({id:'sh'+o.id+'_'+i, oid:o.id, title:'Shooting '+(R.brand||''), date:d.toISOString(), info:R.location||'', type:'shoot', hold:status!=='booked'}));
   store.set('events',events);
 
   closeSheet('sheet-add'); document.getElementById('paste').value=''; document.getElementById('agency').value=''; document.getElementById('parse-out').innerHTML=''; pending=null;
@@ -667,10 +686,10 @@ function setStatus(id,s,reply){ const o=offers.find(x=>x.id===id); if(!o)return;
 let lastDeleted=null;
 function cancelOffer(id){
   const o=offers.find(x=>x.id===id); if(!o) return;
-  const evs=events.filter(e=>String(e.id).replace(/^(c|sh)/,'')===String(id));
+  const evs=events.filter(e=> e.oid!=null ? e.oid===id : String(e.id).replace(/^(c|sh)/,'')===String(id));
   lastDeleted={offer:o, evs};
   offers=offers.filter(x=>x.id!==id);
-  events=events.filter(e=>String(e.id).replace(/^(c|sh)/,'')!==String(id));
+  events=events.filter(e=> e.oid!=null ? e.oid!==id : String(e.id).replace(/^(c|sh)/,'')!==String(id));
   store.set('offers',offers); store.set('events',events); renderAll();
   toastUndo('Tawaran dibatalkan', restoreOffer);
 }
@@ -763,9 +782,8 @@ function renderSchedule(){
     const cls = e.type==='shoot'?'shoot':e.type==='wshop'?'wshop':e.hold?'hold':'';
     const pill = e.type==='shoot'?'<span class="pill s">Shoot</span>':e.type==='wshop'?'<span class="pill w">Workshop</span>':e.type==='casting'?'<span class="pill c">Casting</span>':'';
     const hold = e.hold?'<span class="pill h">On-hold</span>':'';
-    // link event back to its job (casting = c<id>, shoot = sh<id>; workshops = w<ts>, no job)
-    const oid = String(e.id).replace(/^(c|sh|w)/,'');
-    const off = offers.find(o=>String(o.id)===oid);
+    // link event back to its job via stable oid (workshops have no oid)
+    const off = e.oid!=null ? offers.find(o=>o.id===e.oid) : offers.find(o=>String(o.id)===String(e.id).replace(/^(c|sh|w)/,''));
     let detail;
     if(off){
       const [tl,tc]=tagFor(off.status);
