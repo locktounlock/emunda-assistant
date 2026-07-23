@@ -518,10 +518,12 @@ function doParse(){
   if(R.feeTiers.length){ selTierIdx=R.feeTiers.reduce((mi,t,i,a)=> t.fee>a[mi].fee?i:mi, 0); R.fee=R.feeTiers[selTierIdx].fee; }
   const S=scoreOffer(R);
   const dup=findDuplicate(R, agency);
-  pending={R,S,agency,dup,selTier:selTierIdx,roleNote:''};
+  const roleOptions = R.requirements.filter(x=>/\b(cewek|cowok|pria|wanita|couple|barista|crew|artis|talent|cafe|model|pemeran|figuran)\b/i.test(x) && x.length<60);
+  pending={R,S,agency,dup,selTier:selTierIdx,roleNote:'',roleOptions};
   renderParse(R,S,agency,dup);
 }
 function selTier(i){ if(!pending)return; pending.selTier=i; pending.R.fee=pending.R.feeTiers[i].fee; pending.S=scoreOffer(pending.R); renderParse(pending.R,pending.S,pending.agency,pending.dup); }
+function selRole(i){ if(!pending)return; const v=pending.roleOptions[i]; pending.roleNote=(pending.roleNote===v)?'':v; renderParse(pending.R,pending.S,pending.agency,pending.dup); }
 function setRoleNote(v){ if(pending) pending.roleNote=v; }
 function fld(k,v,ok){ return '<div class="field'+(ok?'':' flagrow')+'"><span class="k">'+k+'</span><span class="v">'+v+'</span>'+(ok?'<span class="chk">✓</span>':'<span class="chk" style="color:var(--amber)">?</span>')+'</div>'; }
 function renderParse(R,S,agency,dup){
@@ -541,7 +543,7 @@ function renderParse(R,S,agency,dup){
   }
   // FEE — single row, or a tier picker when several fees exist
   if(R.feeTiers.length>1){
-    let fh='<span class="v" style="width:100%"><div style="font-size:11.5px;color:var(--amber);margin-bottom:6px">Ada '+R.feeTiers.length+' tier fee — pilih peran yang kamu apply:</div>';
+    let fh='<span class="v" style="width:100%"><div style="font-size:11.5px;color:var(--amber);margin-bottom:6px">Ada '+R.feeTiers.length+' tier fee — pilih tier yang berlaku:</div>';
     fh+=R.feeTiers.map((t,i)=>'<div class="tierpick'+(pending&&pending.selTier===i?' on':'')+'" onclick="selTier('+i+')">'+cap(t.label)+' — <b style="color:var(--green)">'+fmtRp(t.fee)+'</b></div>').join('');
     fh+='</span>';
     h+='<div class="field"><span class="k">Fee</span>'+fh+'<span class="chk">✓</span></div>';
@@ -566,7 +568,14 @@ function renderParse(R,S,agency,dup){
     +'<div class="scmeta"><div class="lbl">Skor follow-up</div><div class="big" style="color:'+S.color+'">'+S.verdict+'</div></div></div>';
   h+='<div style="margin-top:12px">'+S.reasons.map(r=>'<div style="font-size:12.5px;color:var(--sub);margin:5px 0;display:flex;gap:8px"><span style="color:'+(r[0]==='+'?'var(--green)':r[0]==='-'?'var(--red)':r[0]==='!'?'var(--red)':'var(--amber)')+'">'+(r[0]==='+'?'▲':r[0]==='-'?'▼':r[0]==='!'?'🚩':'•')+'</span><span>'+r[1]+'</span></div>').join('')+'</div></div>';
 
-  h+='<label style="margin-top:16px">Peran kamu (opsional — kalau apply peran tertentu)</label>';
+  const opts = (pending&&pending.roleOptions)||[];
+  if(opts.length){
+    h+='<label style="margin-top:16px">Pilih peran yang kamu apply</label>';
+    h+='<div>'+opts.map((o,i)=>'<div class="tierpick'+(pending.roleNote===o?' on':'')+'" onclick="selRole('+i+')">'+o+'</div>').join('')+'</div>';
+    h+='<label style="margin-top:10px">atau ketik sendiri</label>';
+  } else {
+    h+='<label style="margin-top:16px">Peran kamu (opsional)</label>';
+  }
   h+='<input type="text" id="rolenote" placeholder="mis. Supporting cewek 27-30" value="'+(pending&&pending.roleNote?pending.roleNote.replace(/"/g,'&quot;'):'')+'" oninput="setRoleNote(this.value)">';
 
   h+='<div class="btns" style="margin-top:14px"><div class="btn pri" onclick="saveOffer(\'applied\')">Simpan — saya apply</div><div class="btn" onclick="saveOffer(\'new\')">Simpan saja</div></div>';
